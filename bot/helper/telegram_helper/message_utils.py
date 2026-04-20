@@ -95,34 +95,6 @@ async def editMessage(text: str, message, reply_markup=None):
         return str(e)
 
 
-async def sendRss(text, chat_id=None, thread_id=None):
-    try:
-        target_chat = chat_id or config_dict["RSS_CHAT_ID"]
-        if app:
-            return await app.send_message(
-                chat_id=target_chat,
-                text=text,
-                message_thread_id=thread_id,
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-                disable_notification=True,
-            )
-        else:
-            return await bot.send_message(
-                chat_id=target_chat,
-                text=text,
-                message_thread_id=thread_id,
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-                disable_notification=True,
-            )
-    except (FloodWait, FloodPremiumWait) as f:
-        LOGGER.warning(str(f))
-        await sleep(f.value * 1.2)
-        return await sendRss(text, chat_id, thread_id)
-    except Exception as e:
-        LOGGER.error(str(e))
-        return str(e)
-
-
 async def deleteMessage(message):
     try:
         await bot.delete_messages(chat_id=message.chat.id, message_ids=message.id)
@@ -175,7 +147,7 @@ async def update_all_messages(force=False):
         for chat_id in list(status_reply_dict.keys()):
             # Get per-chat filter
             status_filter = status_pages.get(chat_id, {}).get("filter", "all")
-            msg, buttons = await run_sync_to_async(get_readable_message, chat_id, status_filter)
+            msg, buttons = await get_readable_message(chat_id, status_filter)
             if msg is None:
                 continue
             if status_reply_dict[chat_id] and msg != status_reply_dict[chat_id][0].text:
@@ -196,7 +168,7 @@ async def sendStatusMessage(msg):
     # Get per-chat filter
     status_filter = status_pages.get(chat_id, {}).get("filter", "all")
 
-    progress, buttons = await run_sync_to_async(get_readable_message, chat_id, status_filter)
+    progress, buttons = await get_readable_message(chat_id, status_filter)
     if progress is None:
         return
     async with status_reply_dict_lock:

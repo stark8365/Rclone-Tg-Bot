@@ -33,9 +33,8 @@ async def start(_, message):
             "🧲 Torrent / Magnet / Direct link support\n"
             "🎬 YT-DLP video downloads\n"
             "📋 Rclone copy / sync / bisync\n"
-            "📰 RSS feeds\n"
-            "🎥 TMDB search\n"
-            "⚡ Debrid integration\n\n"
+
+            "🎥 TMDB search\n\n"
             "📚 Use /help for available commands."
         )
         await sendMarkup(msg, message, reply_markup)
@@ -48,11 +47,9 @@ async def start(_, message):
 
 
 async def restart(_, message):
-    from bot import scheduler, Interval
+    from bot import Interval
 
     restart_msg = await sendMessage("🔄 <b>Restarting...</b>", message)
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
     if Interval:
         for intvl in list(Interval.values()):
             intvl.cancel()
@@ -130,8 +127,8 @@ def add_handlers():
         batch,
         cancel,
         botfiles,
+        help,
         copy,
-        debrid,
         force_start,
         leech,
         mediainfo,
@@ -139,7 +136,6 @@ def add_handlers():
         mirror_select,
         myfilesset,
         owner_settings,
-        pmirror,
         rcfm,
         stats,
         status,
@@ -152,7 +148,6 @@ def add_handlers():
         ytdlp,
         shell,
         exec,
-        rss,
         serve,
         sync,
         gd_count,

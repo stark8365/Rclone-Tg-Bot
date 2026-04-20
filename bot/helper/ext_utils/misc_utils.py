@@ -1,10 +1,9 @@
 from asyncio import create_subprocess_exec
+import inspect
 from shutil import rmtree
-from sys import exit
 from aiohttp import ClientSession
 from bot.helper.ext_utils.bot_utils import (
     cmd_exec,
-    run_async_to_sync,
     run_sync_to_async,
 )
 from bot.helper.telegram_helper.button_build import ButtonMaker
@@ -20,6 +19,7 @@ from aiofiles.os import (
 from re import search as re_search
 from bot import (
     GLOBAL_EXTENSION_FILTER,
+    bot_loop,
     config_dict,
     DOWNLOAD_DIR,
     LOGGER,
@@ -31,7 +31,7 @@ from bot import (
 from bot.core.torrent_manager import TorrentManager
 from json import loads as jsnloads
 from magic import Magic
-from subprocess import run as srun, check_output
+from subprocess import check_output
 from asyncio.subprocess import PIPE
 from os import path as ospath, walk as oswalk
 
@@ -77,6 +77,7 @@ ARCH_EXT = [
 ]
 
 ZIP_EXT = (".zip", ".7z", ".gzip2", ".iso", ".wim", ".rar")
+_shutdown_in_progress = False
 
 
 async def clean_download(path):
@@ -125,15 +126,36 @@ async def clean_all():
             LOGGER.error(str(e))
 
 
-def exit_clean_up(signal, frame):
+async def _shutdown_bot():
+    from bot.helper.ext_utils.db_handler import database
+
     try:
-        LOGGER.info("Please wait, while we clean up and stop the running downloads")
-        run_async_to_sync(clean_all())
-        srun(["pkill", "-9", "-f", "gunicorn|aria2c|qbittorrent-nox|ffmpeg"])
-        exit(0)
-    except KeyboardInterrupt:
-        LOGGER.warning("Force Exiting before the cleanup finishes!")
-        exit(1)
+        await clean_all()
+    except Exception as e:
+        LOGGER.error(str(e))
+    try:
+        proc = await create_subprocess_exec(
+            "pkill", "-9", "-f", "gunicorn|aria2c|qbittorrent-nox|ffmpeg"
+        )
+        await proc.wait()
+    except Exception as e:
+        LOGGER.error(str(e))
+    try:
+        await database.disconnect()
+    except Exception as e:
+        LOGGER.error(str(e))
+    bot_loop.stop()
+
+
+def exit_clean_up(signal, frame):
+    global _shutdown_in_progress
+    if _shutdown_in_progress:
+        LOGGER.warning("Force exiting before cleanup finishes")
+        bot_loop.stop()
+        return
+    _shutdown_in_progress = True
+    LOGGER.info("Please wait, while we clean up and stop the running downloads")
+    bot_loop.create_task(_shutdown_bot())
 
 
 def get_readable_size(size):
@@ -435,7 +457,15 @@ def bt_selection_buttons(id_):
 async def getTaskByGid(gid):
     async with status_dict_lock:
         for dl in status_dict.values():
-            if dl.gid() == gid:
+            attr = dl.gid
+            if callable(attr):
+                result = attr()
+                if inspect.iscoroutine(result):
+                    result = await result
+                dl_gid = result
+            else:
+                dl_gid = attr
+            if dl_gid == gid:
                 return dl
     return None
 

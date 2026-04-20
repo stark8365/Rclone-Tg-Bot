@@ -39,11 +39,7 @@ You can add tuple and dict also. Use double quotes inside dict.
 """
 
 mirror = """
-
-📥 ***MIRROR COMMANDS MENU***
-
-<b>NOTE:</b>
-1. Commands that start with <b>qb</b> are ONLY for torrents.
+📥 <b>MIRROR COMMANDS MENU</b>
 """
 
 new_name = """ 
@@ -53,7 +49,6 @@ new_name = """
 
 2. <b>By replying to link/file</b>  
 
-Note: It does not work with torrents.
 """
 
 extract = """ 
@@ -70,6 +65,12 @@ zip = """
 1.<code>/cmd</code> link -z
 
 2.<code>/cmd</code> link -z password (zip password protected)
+
+3.<b>Reply to a file:</b>
+
+<code>/cmd</code> -z
+
+<code>/cmd</code> -z password (zip password protected)
 """
 
 multi = """
@@ -93,6 +94,30 @@ direct_link = """
 <code>/cmd</code> link -au username -ap password
 
 3. <b>By replying to link</b> 
+"""
+
+tg_link = """
+<b>Telegram Link</b>
+
+<b>Public:</b> <code>https://t.me/channel_name/message_id</code>
+
+<b>Private:</b> <code>https://t.me/c/1234567890/message_id</code>
+
+<b>Auto-detection:</b> If the bot can't access the link, it automatically falls back to your userbot (requires USER_SESSION_STRING).
+
+<b>Upload flags:</b>
+- <code>-ut</code> → Upload via userbot (premium, 4GB limit)
+- <code>-bt</code> → Upload via bot (2GB limit, default)
+"""
+
+userbot = """
+<b>User Transmission</b>
+
+<code>/cmd</code> link -ut <b>(upload via userbot, 4GB for premium)</b>
+
+<code>/cmd</code> link -bt <b>(upload via bot, 2GB limit)</b>
+
+<b>Note:</b> -ut requires USER_SESSION_STRING and a supergroup. Files >2GB are automatically uploaded via userbot when -ut is used (hybrid leech).
 """
 
 torr_select = """
@@ -125,43 +150,6 @@ leech = """
 📥 ***LEECH MENU COMMANDS***
 
 <b>Send link to leech, /ignore to cancel</b>
-"""
-
-RSS_HELP_MESSAGE = """
-📰 <b>RSS Subscription Help</b>
-
-<b>Basic Format:</b>
-<code>Title link</code>
-
-<b>With Filters & Options:</b>
-<code>Title link c: cmd inf: xx exf: xx opt: options stv</code>
-
-<b>Arguments:</b>
-• <code>c:</code> - Command to execute (mirror, leech, etc.)
-• <code>inf:</code> - Include words filter
-• <code>exf:</code> - Exclude words filter
-• <code>opt:</code> - Options like up, rcf, pswd
-• <code>stv</code> - Case-sensitive filter (add this flag for case-sensitive matching)
-
-<b>Examples:</b>
-<code>MyFeed https://rss.example.com c: mirror inf: 1080 or 720 exf: cam opt: up: gd</code>
-
-<code>MyFeed2 https://rss2.example.com c: leech inf: HDR stv</code>
-
-<b>Filter Notes:</b>
-1. | means AND
-2. Use <code>or</code> between similar keys (qualities, extensions)
-3. Add <code>stv</code> for case-sensitive filtering
-4. Check title format to avoid wrong matches
-
-<b>Size Detection:</b>
-• Size is automatically detected from feed summaries
-• Set <code>RSS_SIZE_LIMIT</code> in config to skip large torrents
-
-<b>Forum Topics:</b>
-• Use <code>chat_id|topic_id</code> format in RSS_CHAT_ID
-
-Timeout: 60 sec.
 """
 
 CLONE_HELP_MESSAGE = """
@@ -216,14 +204,16 @@ Each link inside .txt file separated by new line
 MIRROR_HELP_DICT = {
     "Cmd": mirror,
     "Menu": None,
-    "Rename": new_name,
-    "Zip": zip,
-    "Extract": extract,
-    "Multi": multi,
-    "Link": direct_link,
-    "Seed": torr_seed,
-    "Select": torr_select,
-    "Screenshot": screenshots,
+    "✏️Rename": new_name,
+    "🗜️Zip": zip,
+    "📦Extract": extract,
+    "🔢Multi": multi,
+    "🔗Links": direct_link,
+    "🌱Seeding": torr_seed,
+    "🎯TorrentSelect": torr_select,
+    "🖼️Screenshots": screenshots,
+    "📡Telegram": tg_link,
+    "👤UserTrans": userbot,
 }
 
 LEECH_HELP_DICT = {
@@ -237,6 +227,8 @@ LEECH_HELP_DICT = {
     "Seed": torr_seed.replace("<code>/cmd</code>", ""),
     "Select": torr_select.replace("<code>/cmd</code>", ""),
     "Screenshot": screenshots.replace("<code>/cmd</code>", ""),
+    "Telegram": tg_link.replace("<code>/cmd</code>", ""),
+    "UserTrans": userbot.replace("<code>/cmd</code>", ""),
 }
 
 YT_HELP_DICT = {

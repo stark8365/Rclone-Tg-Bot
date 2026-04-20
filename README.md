@@ -10,13 +10,17 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)](LICENSE)
 
-A powerful **asynchronous** Telegram bot for transferring files between cloud storage services and Telegram.
+An **asynchronous** Telegram bot for transferring files between cloud storage services and Telegram.
 
 **Mirror** → Cloud | **Leech** → Telegram | **Clone** → Cloud to Cloud
 
 [Features](#-features) • [Commands](#-bot-commands) • [Deployment](#-deployment) • [Configuration](#%EF%B8%8F-configuration)
 
 </div>
+
+---
+
+> ⚠️ **Stability Notice**: The project is currently in a large refactor phase. During this period, behavior may be unstable and breaking changes can happen between updates until the refactor is completed.
 
 ---
 
@@ -44,8 +48,7 @@ A powerful **asynchronous** Telegram bot for transferring files between cloud st
 | Feature | Description |
 |---------|-------------|
 | **Queue System** | Advanced queuing with `QUEUE_ALL`, `QUEUE_DOWNLOAD`, `QUEUE_UPLOAD` limits |
-| **RSS Feed** | Monitor feeds with size detection, retry logic, and forum topic support |
-| **Private Channels** | Mirror/leech from private Telegram channels (`/pmirror`, `/pleech`) |
+| **Private Channels** | Mirror/leech from private Telegram channels |
 | **Upload Templates** | Dynamic paths with variables like `{username}`, `{date}`, `{category}` |
 | **MediaInfo** | Detailed media file analysis with `/mediainfo` |
 | **Screenshots** | User-configurable screenshot generation |
@@ -64,7 +67,6 @@ A powerful **asynchronous** Telegram bot for transferring files between cloud st
 - Extract and zip link/file from Telegram to cloud
 - Extract and zip folder/file from cloud to Telegram
 - Mirror to local host (no cloud upload)
-- Debrid Manager (Real-Debrid support)
 - Refactored to use Pyrogram with asyncio
 - Docker-based image (Ubuntu)
 - Compatible with Linux `amd64`, `arm64/v8`, `arm/v7`
@@ -81,7 +83,6 @@ Set these commands through [@BotFather](https://t.me/BotFather).
 | `mirror` or `/m` | Mirror to selected cloud |
 | `mirror_batch` or `/mb` | Mirror Telegram files/links in batch |
 | `mirror_select` or `/ms` | Select a fixed cloud/folder for mirror |
-| `pmirror` | Mirror from private Telegram channels |
 | `jdmirror` or `/jm` | Mirror via JDownloader |
 | `ytdl` or `/y` | Mirror yt-dlp supported link |
 | `ytdl_leech` or `/yl` | Leech yt-dlp supported link |
@@ -92,7 +93,6 @@ Set these commands through [@BotFather](https://t.me/BotFather).
 |---------|-------------|
 | `leech` or `/l` | Leech from cloud/link to Telegram |
 | `leech_batch` or `/lb` | Leech Telegram files/links in batch |
-| `pleech` | Leech from private Telegram channels |
 
 ### ☁️ Cloud Management
 | Command | Description |
@@ -111,8 +111,6 @@ Set these commands through [@BotFather](https://t.me/BotFather).
 | Command | Description |
 |---------|-------------|
 | `files` or `/bf` | Bot configuration files |
-| `debrid` | Debrid Manager |
-| `rss` | RSS feed monitor |
 | `mediainfo` | Get detailed media file information |
 | `cancel` | Cancel a task |
 | `force_start` or `/fs` | Force start a queued task |
@@ -291,26 +289,6 @@ cp sample_config.env config.env
 
 ---
 
-##### 📡 RSS Settings
-| Variable | Description | Type |
-|----------|-------------|------|
-| `RSS_DELAY` | Refresh interval in seconds. Default: `900` | `Int` |
-| `RSS_CHAT_ID` | Chat ID for RSS messages. Supports `chat_id\|topic_id` | `Int` |
-| `RSS_SIZE_LIMIT` | Max torrent size in bytes (`0` = unlimited) | `Int` |
-
-**RSS Features:**
-- ✅ Size detection from feed summaries
-- ✅ Direct handler invocation
-- ✅ Retry logic (3 attempts)
-- ✅ Case-sensitive filters with `-stv` flag
-- ✅ Forum topic support
-- ✅ "Use This Chat" button
-- ✅ Browser-like HTTP headers
-
-> **RSS NOTE**: `RSS_CHAT_ID` is required. Use `USER_SESSION_STRING` **OR** a channel. For channels, add bot to both channel and linked group. Without `DATABASE_URL`, feeds during offline periods will be missed.
-
----
-
 ##### 🌐 qBittorrent/Aria2c Settings
 | Variable | Description | Type |
 |----------|-------------|------|
@@ -401,6 +379,32 @@ Run this on your PC from the repository folder.
 ---
 
 ## 🗄️ MongoDB Setup
+
+### Local MongoDB with Docker Compose (No Auth)
+
+`docker-compose.yml` includes a local `mongo` service with persistent storage.
+
+1. Set `DATABASE_URL` in `config.env`:
+
+```env
+DATABASE_URL="mongodb://mongo:27017/rcmltb"
+```
+
+2. Start services:
+
+```bash
+docker compose up -d
+```
+
+3. Verify both containers:
+
+```bash
+docker compose ps
+```
+
+MongoDB data persists in the `mongo_data` volume.
+
+### MongoDB Atlas (Cloud)
 
 1. Go to [mongodb.com](https://mongodb.com/) and sign up
 2. Create a Shared Cluster (Free)
@@ -539,11 +543,5 @@ machine example.workers.dev password index_password
 ## ☕ Support
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/sammax09)
-
----
-
-## 📸 Screenshot
-
-<img src="./screenshot.png" alt="button menu example" width="400">
 
 ---

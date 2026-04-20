@@ -1,9 +1,8 @@
 from asyncio import create_subprocess_exec
-from os import environ, getcwd, path as ospath, remove as osremove
+from os import environ, getcwd, makedirs, path as ospath, remove as osremove
 from subprocess import Popen, run as srun
 
 from dotenv import dotenv_values
-from motor.motor_asyncio import AsyncIOMotorClient
 
 from bot import (
     LOGGER,
@@ -15,6 +14,7 @@ from bot import (
     GLOBAL_EXTENSION_FILTER,
 )
 from bot.core.config_manager import Config
+from bot.helper.ext_utils.db_handler import database
 
 
 async def load_settings():
@@ -26,8 +26,11 @@ async def load_settings():
     if not DATABASE_URL:
         return
 
-    conn = AsyncIOMotorClient(DATABASE_URL)
-    db = conn.rcmltb
+    if not await database.connect():
+        LOGGER.warning("[DB] Unable to connect, continuing without persisted settings")
+        return
+
+    db = database._db_ref
     current_config = dict(dotenv_values("config.env"))
     old_config = await db.settings.deployConfig.find_one({"_id": bot_id})
     if old_config is None:
@@ -58,7 +61,34 @@ async def load_settings():
     if qbit_opt := await db.settings.qbittorrent.find_one({"_id": bot_id}):
         del qbit_opt["_id"]
         qbit_options = qbit_opt
-    conn.close()
+
+    if await db.users.find_one():
+        rows = db.users.find({})
+        async for row in rows:
+            uid = row["_id"]
+            del row["_id"]
+            thumb_path = f"Thumbnails/{uid}.jpg"
+            rclone_user = f"rclone/{uid}/rclone.conf"
+            rclone_global = "rclone/rclone_global/rclone.conf"
+            if row.get("thumb"):
+                if not ospath.exists("Thumbnails"):
+                    makedirs("Thumbnails")
+                with open(thumb_path, "wb+") as f:
+                    f.write(row["thumb"])
+                row["thumb"] = thumb_path
+            if row.get("rclone"):
+                if not ospath.exists(f"rclone/{uid}"):
+                    makedirs(f"rclone/{uid}")
+                with open(rclone_user, "wb+") as f:
+                    f.write(row["rclone"])
+            if row.get("rclone_global"):
+                if not ospath.exists("rclone/rclone_global"):
+                    makedirs("rclone/rclone_global")
+                with open(rclone_global, "wb+") as f:
+                    f.write(row["rclone_global"])
+            user_data[uid] = row
+        LOGGER.info("Users data has been imported from Database")
+
 
 
 async def load_configurations():
@@ -99,8 +129,10 @@ async def save_settings():
     if not DATABASE_URL:
         return
     try:
-        conn = AsyncIOMotorClient(DATABASE_URL)
-        db = conn.rcmltb
+        if not await database.connect():
+            LOGGER.warning("[DB] Unable to connect, skipping save_settings")
+            return
+        db = database._db_ref
         await db.settings.config.update_one(
             {"_id": bot_id}, {"$set": config_dict}, upsert=True
         )
@@ -112,7 +144,6 @@ async def save_settings():
             await db.settings.qbittorrent.update_one(
                 {"_id": bot_id}, {"$set": qbit_options}, upsert=True
             )
-        conn.close()
     except Exception as e:
         LOGGER.error(f"Error saving settings: {e}")
 
@@ -120,11 +151,15 @@ async def save_settings():
 async def update_variables():
     if Config.ALLOWED_CHATS:
         for id_ in Config.ALLOWED_CHATS.split():
-            user_data[int(id_.strip())] = {"is_auth": True}
+            uid = int(id_.strip())
+            user_data.setdefault(uid, {})
+            user_data[uid]["is_auth"] = True
 
     if Config.SUDO_USERS:
         for id_ in Config.SUDO_USERS.split():
-            user_data[int(id_.strip())] = {"is_sudo": True}
+            uid = int(id_.strip())
+            user_data.setdefault(uid, {})
+            user_data[uid]["is_sudo"] = True
 
     if Config.EXTENSION_FILTER:
         for x in Config.EXTENSION_FILTER.split():
@@ -160,6 +195,7 @@ async def update_qbit_options():
         qbit_options = await TorrentManager.get_qbit_preferences()
         if "listen_port" in qbit_options:
             del qbit_options["listen_port"]
+        # Clean up any legacy rss-related options from qbit_options if present
         for k in list(qbit_options.keys()):
             if k.startswith("rss"):
                 del qbit_options[k]

@@ -1,5 +1,5 @@
 from asyncio import create_subprocess_exec, gather
-from signal import signal, SIGINT
+from signal import signal, SIGINT, SIGTERM, SIGTSTP, SIG_IGN
 from aiofiles import open as aiopen
 from time import time
 from os import path as ospath, remove as osremove, execl as osexecl
@@ -8,7 +8,6 @@ from sys import executable
 from bot import (
     LOGGER,
     bot_loop,
-    scheduler,
     config_dict,
 )
 from bot.core.telegram_manager import TgClient
@@ -27,6 +26,7 @@ from bot.helper.ext_utils.help_messages import (
     create_mirror_help_buttons,
     create_ytdl_help_buttons,
 )
+from bot.helper.ext_utils.db_handler import database
 from bot.helper.ext_utils.misc_utils import clean_all, exit_clean_up, start_cleanup
 from bot.helper.telegram_helper.message_utils import sendMessage
 from pyrogram.types import BotCommand
@@ -34,6 +34,8 @@ from bot.helper.telegram_helper.bot_commands import BotCommands
 
 
 async def main():
+    await database.connect()
+
     # 1. Load settings from DB
     await load_settings()
     LOGGER.info("Settings loaded from database")
@@ -76,12 +78,9 @@ async def main():
     )
     LOGGER.info("Help buttons and telegraph created")
 
-    # 9. Initialize search tools and debrid
-    from bot.modules import torr_search, debrid
-    await gather(
-        torr_search.initiate_search_tools(),
-        debrid.load_debrid_token(),
-    )
+    # 9. Initialize search tools
+    from bot.modules import torr_search
+    await torr_search.initiate_search_tools()
 
     # 10. Start aria2 listener
     from bot.helper.listeners.aria2_listener import add_aria2_callbacks
@@ -111,6 +110,7 @@ async def main():
     await TgClient.bot.set_bot_commands(
         [
             BotCommand(BotCommands.StartCommand, "Start the bot"),
+            BotCommand(BotCommands.HelpCommand, "Show help and usage"),
             BotCommand(BotCommands.MirrorCommand[0], "Mirror to cloud"),
             BotCommand(BotCommands.LeechCommand[0], "Leech to Telegram"),
             BotCommand(BotCommands.CloneCommand, "Clone Google Drive files"),
@@ -119,7 +119,7 @@ async def main():
             BotCommand(BotCommands.StatsCommand, "Show bot stats"),
             BotCommand(BotCommands.CancelCommand, "Cancel a task"),
             BotCommand(BotCommands.CancelAllCommand, "Cancel all tasks"),
-            BotCommand(BotCommands.RssCommand, "RSS feed manager"),
+
             BotCommand(BotCommands.TorrentSearchCommand, "Search torrents"),
             BotCommand(BotCommands.ServeCommand, "Serve files via web"),
             BotCommand(BotCommands.UserSetCommand, "User settings"),
@@ -128,8 +128,6 @@ async def main():
             BotCommand(BotCommands.LogsCommand, "Get bot logs"),
             BotCommand(BotCommands.RestartCommand, "Restart the bot"),
             BotCommand(BotCommands.MediaInfoCommand, "Get media file information"),
-            BotCommand(BotCommands.PMirrorCommand, "Mirror from private channels"),
-            BotCommand(BotCommands.PLeechCommand, "Leech from private channels"),
         ]
     )
 
@@ -138,6 +136,8 @@ async def main():
 
     LOGGER.info("Bot Started!")
     signal(SIGINT, exit_clean_up)
+    signal(SIGTERM, exit_clean_up)
+    signal(SIGTSTP, SIG_IGN)
 
 
 bot_loop.run_until_complete(main())

@@ -3,7 +3,7 @@ from asyncio import create_subprocess_exec
 from asyncio.subprocess import PIPE
 from json import loads as jsonloads
 from configparser import ConfigParser
-from bot import GLOBAL_EXTENSION_FILTER, LOGGER, config_dict, remotes_multi
+from bot import GLOBAL_EXTENSION_FILTER, LOGGER, OWNER_ID, config_dict, remotes_multi, user_data
 from bot.helper.ext_utils.bot_utils import cmd_exec, run_sync_to_async
 from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.ext_utils.exceptions import NotRclonePathFound
@@ -22,32 +22,40 @@ from bot.helper.telegram_helper.button_build import ButtonMaker
 from bot.helper.ext_utils.rclone_data_holder import get_rclone_data, update_rclone_data
 
 
-async def is_remote_selected(user_id, message):
-    if await CustomFilters.sudo_filter("", message):
-        if DEFAULT_OWNER_REMOTE := config_dict["DEFAULT_OWNER_REMOTE"]:
-            update_rclone_data("MIRROR_SELECT_REMOTE", DEFAULT_OWNER_REMOTE, user_id)
-            return True
-    if config_dict["MULTI_RCLONE_CONFIG"]:
-        if get_rclone_data("MIRROR_SELECT_REMOTE", user_id):
-            return True
-        elif len(remotes_multi) > 0:
-            return True
+async def is_remote_selected(user_id, message, open_selector=False):
+    try:
+        if await CustomFilters.sudo_filter("", message):
+            if DEFAULT_OWNER_REMOTE := config_dict["DEFAULT_OWNER_REMOTE"]:
+                update_rclone_data("MIRROR_SELECT_REMOTE", DEFAULT_OWNER_REMOTE, user_id)
+                return True
+        if config_dict["MULTI_RCLONE_CONFIG"]:
+            if get_rclone_data("MIRROR_SELECT_REMOTE", user_id):
+                return True
+            elif len(remotes_multi) > 0:
+                return True
+            else:
+                if open_selector:
+                    await list_remotes(message, menu_type=Menus.MIRROR_SELECT)
+                else:
+                    await sendMessage(
+                        f"Select a cloud first, use /{BotCommands.MirrorSelectCommand[0]}",
+                        message,
+                    )
+                return False
         else:
-            await sendMessage(
-                f"Select a cloud first, use /{BotCommands.MirrorSelectCommand[0]}",
-                message,
-            )
-            return False
-    else:
-        return True
+            return True
+    except NotRclonePathFound:
+        return False
 
 
-async def is_rclone_config(user_id, message, isLeech=False):
+async def is_rclone_config(user_id, message, isLeech=False, show_prompt=False):
+    is_sudo_user = user_id == OWNER_ID or user_data.get(user_id, {}).get("is_sudo")
+
     if config_dict["MULTI_RCLONE_CONFIG"]:
         path = f"rclone/{user_id}/rclone.conf"
         no_path_msg = "Send a rclone config file, use /files command"
     else:
-        if CustomFilters.sudo(user_id):
+        if is_sudo_user:
             path = f"rclone/{user_id}/rclone.conf"
             no_path_msg = "Send a rclone config file, use /files command"
         else:
@@ -60,15 +68,33 @@ async def is_rclone_config(user_id, message, isLeech=False):
         if isLeech:
             return True
         else:
-            await sendMessage(no_path_msg, message)
+            if show_prompt and (config_dict["MULTI_RCLONE_CONFIG"] or is_sudo_user):
+                await send_rclone_config_upload_prompt(user_id, message)
+            else:
+                await sendMessage(no_path_msg, message)
             return False
 
 
+async def send_rclone_config_upload_prompt(user_id, message):
+    buttons = ButtonMaker()
+    buttons.cb_buildbutton(
+        "📤 Upload rclone.conf", f"configmenu^upload^rclone^{user_id}"
+    )
+    buttons.cb_buildbutton("✘ Close Menu", f"configmenu^close^{user_id}", "footer")
+    await sendMarkup(
+        "⚠️ <b>rclone.conf not found</b>\n\nUpload a rclone config file to continue.",
+        message,
+        reply_markup=buttons.build_menu(1),
+    )
+
+
 async def get_rclone_path(user_id, message=None):
+    is_sudo_user = user_id == OWNER_ID or user_data.get(user_id, {}).get("is_sudo")
+
     if config_dict["MULTI_RCLONE_CONFIG"]:
         path = f"rclone/{user_id}/rclone.conf"
     else:
-        if CustomFilters.sudo(user_id):
+        if is_sudo_user:
             path = f"rclone/{user_id}/rclone.conf"
         else:
             path = f"rclone/rclone_global/rclone.conf"
@@ -157,12 +183,16 @@ async def list_remotes(
         msg = "Select cloud to view info"
     elif menu_type == Menus.MIRROR_SELECT:
         if config_dict["MULTI_REMOTE_UP"]:
-            msg = f"Select all clouds where you want to upload file"
-            buttons.cb_buildbutton("🔄 Reset", f"{menu_type}^reset^{user_id}" ,"footer")
+            msg = "Choose destination clouds for mirror uploads"
+            buttons.cb_buildbutton("🔄 Clear Selected", f"{menu_type}^reset^{user_id}", "footer")
         else:
             remote = get_rclone_data("MIRROR_SELECT_REMOTE", user_id)
-            dir = get_rclone_data("MIRROR_SELECT_BASE_DIR", user_id)
-            msg = f"Select cloud where you want to store files\n\n<b>Path:</b><code>{remote}:{dir}</code>"
+            base_dir = get_rclone_data("MIRROR_SELECT_BASE_DIR", user_id)
+            current_path = f"{remote}:{base_dir}" if remote else "Not set"
+            msg = (
+                "Choose destination cloud for mirror uploads"
+                f"\n\n<b>Current:</b> <code>{current_path}</code>"
+            )
     elif menu_type == Menus.SYNC:
         msg = f"Select <b>{remote_type}</b> cloud"
         msg += "<b>\n\nNote</b>: Sync make source and destination identical, modifying destination only."
@@ -170,7 +200,7 @@ async def list_remotes(
         msg = "Select cloud where your files are stored\n\n"
     if is_second_menu:
         msg = "Select folder where you want to copy"
-    buttons.cb_buildbutton("✘ Close Menu", f"{menu_type}^close^{user_id}", "footer")
+    buttons.cb_buildbutton("✖ Cancel", f"{menu_type}^close^{user_id}", "footer")
     if edit:
         await editMessage(msg, message, reply_markup=buttons.build_menu(2))
     else:
@@ -231,13 +261,16 @@ async def list_folder(
                 and conf.get(rclone_remote, "type") == "crypt"
             ):
                 rc_path = conf.get(rclone_remote, "remote")
-                msg = f"Crypt Remote\n\n<b>Path:</b><code>{rc_path}</code>"
-                buttons.cb_buildbutton("✅ Select", f"{menu_type}^close^{user_id}")
+                msg = (
+                    "🔐 <b>Crypt destination</b>"
+                    f"\n\n<b>Path:</b> <code>{rc_path}</code>"
+                )
+                buttons.cb_buildbutton("✅ Use this destination", f"{menu_type}^close^{user_id}")
                 buttons.cb_buildbutton(
                     "⬅️ Back", f"{menu_type}^{back_callback}^{user_id}", "footer_second"
                 )
                 buttons.cb_buildbutton(
-                    "✘ Close Menu", f"{menu_type}^close^{user_id}", "footer_third"
+                    "✖ Cancel", f"{menu_type}^close^{user_id}", "footer_third"
                 )
                 await editMessage(msg, message, reply_markup=buttons.build_menu(1))
                 return
@@ -245,9 +278,12 @@ async def list_folder(
             next_type = "next_ms"
             cmd.extend(["--dirs-only", "--fast-list", "--no-modtime"])
             buttons.cb_buildbutton(
-                "✅ Select this folder", f"{menu_type}^close^{user_id}"
+                "✅ Use this folder", f"{menu_type}^close^{user_id}"
             )
-            msg = f"Select folder where you want to store files\n\n<b>Path:</b><code>{rc_path}</code>"
+            msg = (
+                "📁 <b>Choose destination folder</b>"
+                f"\n\n<b>Path:</b> <code>{rc_path}</code>"
+            )
     elif menu_type == Menus.MYFILES:
         next_type = "next_myfiles"
         file_callback = "file_action"
@@ -327,7 +363,7 @@ async def list_folder(
         "⬅️ Back", f"{menu_type}^{back_callback}^{user_id}", "footer_second"
     )
     buttons.cb_buildbutton(
-        "✘ Close Menu", f"{menu_type}^close^{user_id}", "footer_third"
+        "✖ Cancel", f"{menu_type}^close^{user_id}", "footer_third"
     )
 
     if edit:
@@ -400,7 +436,7 @@ async def create_next_buttons(
         "⬅️ Back", f"{menu_type}^{data_back_cb}^{user_id}", "footer_third"
     )
     buttons.cb_buildbutton(
-        "✘ Close Menu", f"{menu_type}^close^{user_id}", "footer_third"
+        "✖ Cancel", f"{menu_type}^close^{user_id}", "footer_third"
     )
 
 
