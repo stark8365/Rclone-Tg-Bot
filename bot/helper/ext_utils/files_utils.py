@@ -113,6 +113,24 @@ async def clean_target(path: str):
             LOGGER.error(str(e))
 
 
+async def remove_excluded_files(fpath, excluded_exts):
+    for root, _, files in await run_sync_to_async(oswalk, fpath):
+        if root.strip().endswith("/yt-dlp-thumb"):
+            continue
+        for f in files:
+            if f.strip().lower().endswith(tuple(excluded_exts)):
+                await aioremove(ospath.join(root, f))
+
+
+async def remove_non_included_files(fpath, included_exts):
+    for root, _, files in await run_sync_to_async(oswalk, fpath):
+        if root.strip().endswith("/yt-dlp-thumb"):
+            continue
+        for f in files:
+            if not f.strip().lower().endswith(tuple(included_exts)):
+                await aioremove(ospath.join(root, f))
+
+
 async def start_cleanup():
     await TorrentManager.qbittorrent.torrents.delete(hashes="all", delete_files=True)
     if not config_dict["LOCAL_MIRROR"]:
@@ -133,18 +151,29 @@ async def clean_all():
 
 
 def exit_clean_up(signal, frame):
-    from bot.helper.ext_utils.bot_utils import run_async_to_sync
-    from subprocess import run as srun
-    from sys import exit
+    from bot import bot_loop
+    from asyncio import create_subprocess_exec
+
+    async def _shutdown_bot():
+        try:
+            await clean_all()
+        except Exception as e:
+            LOGGER.error(str(e))
+        try:
+            proc = await create_subprocess_exec(
+                "pkill", "-9", "-f", "gunicorn|aria2c|qbittorrent-nox|ffmpeg|yt-dlp"
+            )
+            await proc.wait()
+        except Exception as e:
+            LOGGER.error(str(e))
+        bot_loop.stop()
 
     try:
         LOGGER.info("Please wait, while we clean up and stop the running downloads")
-        run_async_to_sync(clean_all())
-        srun(["pkill", "-9", "-f", "gunicorn|aria2c|qbittorrent-nox|ffmpeg"])
-        exit(0)
+        bot_loop.create_task(_shutdown_bot())
     except KeyboardInterrupt:
         LOGGER.warning("Force Exiting before the cleanup finishes!")
-        exit(1)
+        bot_loop.stop()
 
 
 def get_base_name(orig_path: str):

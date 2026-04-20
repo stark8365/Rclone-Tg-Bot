@@ -33,9 +33,8 @@ async def start(_, message):
             "🧲 Torrent / Magnet / Direct link support\n"
             "🎬 YT-DLP video downloads\n"
             "📋 Rclone copy / sync / bisync\n"
-            "📰 RSS feeds\n"
-            "🎥 TMDB search\n"
-            "⚡ Debrid integration\n\n"
+
+            "🎥 TMDB search\n\n"
             "📚 Use /help for available commands."
         )
         await sendMarkup(msg, message, reply_markup)
@@ -48,18 +47,16 @@ async def start(_, message):
 
 
 async def restart(_, message):
-    from bot import scheduler, Interval
+    from bot import Interval
 
     restart_msg = await sendMessage("🔄 <b>Restarting...</b>", message)
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
     if Interval:
         for intvl in list(Interval.values()):
             intvl.cancel()
     await clean_all()
     await (
         await create_subprocess_exec(
-            "pkill", "-9", "-f", "gunicorn|aria2c|rclone|qbittorrent-nox|ffmpeg"
+            "pkill", "-9", "-f", "gunicorn|aria2c|rclone|qbittorrent-nox|ffmpeg|yt-dlp"
         )
     ).wait()
     await (await create_subprocess_exec("python3", "update.py")).wait()
@@ -130,16 +127,14 @@ def add_handlers():
         batch,
         cancel,
         botfiles,
+        help,
         copy,
-        debrid,
         force_start,
         leech,
-        mediainfo,
         mirror_leech,
         mirror_select,
         myfilesset,
         owner_settings,
-        pmirror,
         rcfm,
         stats,
         status,
@@ -152,7 +147,6 @@ def add_handlers():
         ytdlp,
         shell,
         exec,
-        rss,
         serve,
         sync,
         gd_count,

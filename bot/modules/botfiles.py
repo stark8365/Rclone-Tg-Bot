@@ -1,12 +1,12 @@
 from asyncio import TimeoutError, create_subprocess_exec, create_subprocess_shell
 from asyncio.subprocess import PIPE, create_subprocess_exec as exec
-from bot.modules.debrid import load_debrid_token
 from pyrogram.filters import regex, command
 from pyrogram import filters
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from os import environ, getcwd, makedirs, path as ospath, remove as osremove
 from dotenv import load_dotenv
 from subprocess import run as srun
+from shutil import copyfile
 from bot import (
     DATABASE_URL,
     GLOBAL_EXTENSION_FILTER,
@@ -24,8 +24,8 @@ from bot import (
 )
 from bot.core.torrent_manager import TorrentManager
 from bot.helper.telegram_helper.bot_commands import BotCommands
-from bot.helper.ext_utils.bot_utils import run_sync_to_async, setInterval
-from bot.helper.ext_utils.db_handler import DbManager
+from bot.helper.ext_utils.bot_utils import setInterval
+from bot.helper.ext_utils.db_handler import database
 from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.message_utils import (
     editMarkup,
@@ -34,7 +34,6 @@ from bot.helper.telegram_helper.message_utils import (
     update_all_messages,
 )
 from bot.helper.telegram_helper.button_build import ButtonMaker
-from bot.helper.ext_utils.rclone_utils import get_rclone_path
 from bot.modules.torr_search import initiate_search_tools
 
 
@@ -171,12 +170,6 @@ async def load_config():
     if len(YT_DLP_OPTIONS) == 0:
         YT_DLP_OPTIONS = ""
 
-    RSS_CHAT_ID = environ.get("RSS_CHAT_ID", "")
-    RSS_CHAT_ID = "" if len(RSS_CHAT_ID) == 0 else int(RSS_CHAT_ID)
-
-    RSS_DELAY = environ.get("RSS_DELAY", "")
-    RSS_DELAY = 900 if len(RSS_DELAY) == 0 else int(RSS_DELAY)
-
     USER_SESSION_STRING = environ.get("USER_SESSION_STRING", "")
 
     TORRENT_TIMEOUT = environ.get("TORRENT_TIMEOUT", "")
@@ -184,13 +177,13 @@ async def load_config():
         await TorrentManager.change_aria2_option("bt-stop-timeout", "0")
         aria2_options["bt-stop-timeout"] = "0"
         if DATABASE_URL:
-            await DbManager().update_aria2("bt-stop-timeout", "0")
+            await database.update_aria2("bt-stop-timeout", "0")
         TORRENT_TIMEOUT = ""
     else:
         await TorrentManager.change_aria2_option("bt-stop-timeout", TORRENT_TIMEOUT)
         aria2_options["bt-stop-timeout"] = TORRENT_TIMEOUT
         if DATABASE_URL:
-            await DbManager().update_aria2("bt-stop-timeout", TORRENT_TIMEOUT)
+            await database.update_aria2("bt-stop-timeout", TORRENT_TIMEOUT)
         TORRENT_TIMEOUT = int(TORRENT_TIMEOUT)
 
     IS_TEAM_DRIVE = environ.get("IS_TEAM_DRIVE", "")
@@ -318,8 +311,6 @@ async def load_config():
             "PARALLEL_TASKS": PARALLEL_TASKS,
             "QB_BASE_URL": QB_BASE_URL,
             "QB_SERVER_PORT": QB_SERVER_PORT,
-            "RSS_CHAT_ID": RSS_CHAT_ID,
-            "RSS_DELAY": RSS_DELAY,
             "SEARCH_PLUGINS": SEARCH_PLUGINS,
             "SEARCH_API_LINK": SEARCH_API_LINK,
             "SEARCH_LIMIT": SEARCH_LIMIT,
@@ -348,187 +339,250 @@ async def load_config():
     )
 
     if DATABASE_URL:
-        await DbManager().update_config(config_dict)
+        await database.update_config(config_dict)
     await initiate_search_tools()
 
 
-async def config_menu(user_id, message, edit=False):
-    msg = "⚙️ <b>Rclone configuration</b>"
-    rclone_conf = f"rclone/{user_id}/rclone.conf"
-    token_pickle = f"tokens/{user_id}.pickle"
-    debrid_token= "debrid/debrid_token.txt"
-    remotes = ""
+def _can_manage_global(user_id):
+    return user_id == OWNER_ID or bool(user_data.get(user_id, {}).get("is_sudo"))
+
+
+def _section_title(section):
+    return {
+        "rclone": "👤 My rclone config",
+        "token": "🔑 Google Drive token",
+        "rclone_global": "🌐 Global rclone config",
+        "config": "🛠 Bot config",
+        "accounts": "📦 Service accounts",
+    }[section]
+
+
+def _section_path(section, user_id):
+    return {
+        "rclone": f"rclone/{user_id}/rclone.conf",
+        "token": f"tokens/{user_id}.pickle",
+        "rclone_global": "rclone/rclone_global/rclone.conf",
+        "config": "config.env",
+        "accounts": "accounts",
+    }[section]
+
+
+def _overview_sections(user_id):
+    sections = ["rclone", "token"]
+    if _can_manage_global(user_id):
+        sections.extend(["rclone_global", "config", "accounts"])
+    return sections
+
+
+async def _rclone_remotes(path, message):
+    cmd = ["rclone", "listremotes", f"--config={path}"]
+    process = await exec(*cmd, stdout=PIPE, stderr=PIPE)
+    stdout, stderr = await process.communicate()
+    if await process.wait() != 0:
+        err = stderr.decode().strip() or "Unknown rclone error"
+        await sendMessage(f"Error: {err}", message)
+        return None
+    remotes = [remote.replace(":", "").strip() for remote in stdout.decode().splitlines()]
+    remotes = [remote for remote in remotes if remote]
+    if not remotes:
+        return "- No remotes found"
+    return "\n".join(f"- {remote}" for remote in remotes)
+
+
+async def files_menu(user_id, message, edit=False):
     buttons = ButtonMaker()
-
-    if ospath.exists(rclone_conf):
-        cmd = ["rclone", "listremotes", f"--config={rclone_conf}"]
-        process = await exec(*cmd, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = await process.communicate()
-        return_code = await process.wait()
-        if return_code != 0:
-            err = stderr.decode().strip()
-            await sendMessage(f"Error: {err}", message)
-            return
-        stdout = stdout.decode().strip()
-        info = stdout.split("\n")
-        for i in info:
-            remote = i.replace(":", "")
-            remotes += f"- {remote}\n"
-        msg += "\n\n📋 <b>Here is list of drives in config file:</b>"
-        msg += f"\n{remotes}"
-    
-    if ospath.exists(rclone_conf):
-        buttons.cb_buildbutton("🗂 rclone.conf", f"configmenu^get_rclone_conf^{user_id}")
-        buttons.cb_buildbutton("🗑 rclone.conf", f"configmenu^delete_clone_conf^{user_id}")
-    else:
-        buttons.cb_buildbutton("📃rclone.conf", f"configmenu^add_rclone_conf^{user_id}", "footer")
-
-    if ospath.exists(token_pickle):
-        buttons.cb_buildbutton("🗂 token.pickle", f"configmenu^get_token_pickle^{user_id}")
-        buttons.cb_buildbutton(
-            "🗑 token.pickle", f"configmenu^delete_token_pickle^{user_id}"
-        )
-    else:
-        buttons.cb_buildbutton(
-            "📃 token.pickle", f"configmenu^add_token_pickle^{user_id}", "footer_second"
-            )
-
-    if await CustomFilters.sudo_filter("", message):
-        global_rc = f"rclone/rclone_global/rclone.conf"
-        if ospath.exists(global_rc):
-            buttons.cb_buildbutton(
-                "🗂 rclone.conf (🌐)", f"configmenu^get_global_rclone_conf^{user_id}"
-            )
-            buttons.cb_buildbutton(
-                "🗑 rclone.conf (🌐)", f"configmenu^delete_global_rclone_conf^{user_id}"
-            )
-        else:
-            buttons.cb_buildbutton(
-                "📃 rclone.conf (🌐)",
-                f"configmenu^add_global_rclone_conf^{user_id}",
-                "footer",
-            )
-        if ospath.exists("accounts"):
-            buttons.cb_buildbutton(
-                "🗑 accounts folder", f"configmenu^delete_accounts^{user_id}"
-            )
-        else:
-            buttons.cb_buildbutton(
-                "📃 accounts.zip", f"configmenu^add_accounts^{user_id}" ,"footer_second"
-            )
-        if ospath.exists(debrid_token):
-            buttons.cb_buildbutton("🗂 debrid.token", f"configmenu^get_debrid_token^{user_id}")
-            buttons.cb_buildbutton("🗑 debrid.token", f"configmenu^delete_debrid_token^{user_id}")
-        else:
-            buttons.cb_buildbutton("📃debrid.token", f"configmenu^add_debrid_token^{user_id}", "footer")
-        if ospath.exists("config.env"):
-            buttons.cb_buildbutton(
-                "🗂 config.env", f"configmenu^get_config_env^{user_id}"
-            )
-            buttons.cb_buildbutton(
-                "🗑 config.env", f"configmenu^delete_config_env^{user_id}"
-            )
-        else:
-            buttons.cb_buildbutton(
-                "📃config.env", f"configmenu^add_config_env^{user_id}", "footer"
-            )
-    buttons.cb_buildbutton(
-        "✘ Close Menu", f"configmenu^close^{user_id}", "footer_third"
+    msg = (
+        "⚙️ <b>Files manager</b>\n\n"
+        "Manage the files used by the bot. Tap a card to open its submenu."
     )
+
+    for section in _overview_sections(user_id):
+        exists = ospath.exists(_section_path(section, user_id))
+        status = "✅" if exists else "➕"
+        buttons.cb_buildbutton(
+            f"{status} {_section_title(section)}",
+            f"configmenu^section^{section}^{user_id}",
+        )
+
+    buttons.cb_buildbutton("✘ Close Menu", f"configmenu^close^{user_id}", "footer")
+    markup = buttons.build_menu(2)
     if edit:
-        await editMarkup(msg, message, reply_markup=buttons.build_menu(2))
+        await editMarkup(msg, message, reply_markup=markup)
     else:
-        await sendMarkup(msg, message, reply_markup=buttons.build_menu(2))
+        await sendMarkup(msg, message, reply_markup=markup)
+
+
+async def files_section_menu(user_id, message, section, edit=False):
+    if section in {"rclone_global", "config", "accounts"} and not _can_manage_global(
+        user_id
+    ):
+        await sendMessage("🚫 <b>Not allowed to use</b>", message)
+        return
+
+    path = _section_path(section, user_id)
+    exists = ospath.exists(path)
+    buttons = ButtonMaker()
+    msg = (
+        f"{_section_title(section)}\n\n"
+        f"<b>Status:</b> {'✅ Present' if exists else '➕ Missing'}\n"
+        f"<b>Path:</b> <code>{path}</code>"
+    )
+
+    if section in {"rclone", "rclone_global"} and exists:
+        remotes = await _rclone_remotes(path, message)
+        if remotes:
+            msg += f"\n\n<b>Remotes:</b>\n{remotes}"
+
+    if section == "accounts":
+        if exists:
+            buttons.cb_buildbutton(
+                "📤 Replace accounts.zip", f"configmenu^upload^{section}^{user_id}"
+            )
+            buttons.cb_buildbutton(
+                "🗑 Delete accounts", f"configmenu^delete^{section}^{user_id}"
+            )
+        else:
+            buttons.cb_buildbutton(
+                "📤 Upload accounts.zip", f"configmenu^upload^{section}^{user_id}"
+            )
+    else:
+        file_name = path.rsplit("/", 1)[-1]
+        if exists:
+            buttons.cb_buildbutton(
+                f"📥 View {file_name}", f"configmenu^view^{section}^{user_id}"
+            )
+            buttons.cb_buildbutton(
+                f"📤 Replace {file_name}", f"configmenu^upload^{section}^{user_id}"
+            )
+            buttons.cb_buildbutton(
+                f"🗑 Delete {file_name}", f"configmenu^delete^{section}^{user_id}"
+            )
+        else:
+            buttons.cb_buildbutton(
+                f"📤 Upload {file_name}", f"configmenu^upload^{section}^{user_id}"
+            )
+
+    buttons.cb_buildbutton("⬅️ Back", f"configmenu^back^{user_id}", "footer")
+    buttons.cb_buildbutton("✘ Close Menu", f"configmenu^close^{user_id}", "footer_second")
+    markup = buttons.build_menu(2)
+    if edit:
+        await editMarkup(msg, message, reply_markup=markup)
+    else:
+        await sendMarkup(msg, message, reply_markup=markup)
+
+
+async def _view_section_file(client, message, user_id, section):
+    if section == "accounts":
+        await sendMessage("📦 <b>Service accounts are stored as a folder.</b>", message)
+        return
+
+    path = _section_path(section, user_id)
+    if not ospath.exists(path):
+        await sendMessage("File not found.", message)
+        return
+    await client.send_document(document=path, chat_id=message.chat.id)
+
+
+async def _delete_section_file(user_id, section):
+    path = _section_path(section, user_id)
+
+    if section == "accounts":
+        if ospath.exists(path):
+            srun(["rm", "-rf", path])
+        config_dict["USE_SERVICE_ACCOUNTS"] = False
+        if DATABASE_URL:
+            await database.update_config({"USE_SERVICE_ACCOUNTS": False})
+            await database.update_private_file("accounts.zip")
+        return
+
+    if ospath.exists(path):
+        osremove(path)
+
+    if DATABASE_URL:
+        await database.update_private_file(path)
+
+
+async def _start_upload_listener(client, query, message, user_id, section):
+    await query.answer("📁 Send the file", show_alert=False)
+    await set_config_listener(
+        client,
+        query,
+        message,
+        rclone_global=section == "rclone_global",
+        forced_section=section,
+        target_user_id=user_id,
+    )
+
+
+def _resolve_action(action):
+    aliases = {
+        "get_rclone_conf": ("view", "rclone"),
+        "get_global_rclone_conf": ("view", "rclone_global"),
+        "get_token_pickle": ("view", "token"),
+        "get_config_env": ("view", "config"),
+        "add_rclone_conf": ("upload", "rclone"),
+        "add_global_rclone_conf": ("upload", "rclone_global"),
+        "add_token_pickle": ("upload", "token"),
+        "add_config_env": ("upload", "config"),
+        "add_accounts": ("upload", "accounts"),
+        "delete_clone_conf": ("delete", "rclone"),
+        "delete_global_rclone_conf": ("delete", "rclone_global"),
+        "delete_token_pickle": ("delete", "token"),
+        "delete_config_env": ("delete", "config"),
+        "delete_accounts": ("delete", "accounts"),
+    }
+    return aliases.get(action, (action, None))
 
 
 async def handle_botfiles(client, message):
     user_id = message.from_user.id
-    if config_dict["MULTI_RCLONE_CONFIG"]:
-        await config_menu(user_id, message)
+    if config_dict["MULTI_RCLONE_CONFIG"] or await CustomFilters.sudo_filter("", message):
+        await files_menu(user_id, message)
     else:
-        if await CustomFilters.sudo_filter("", message):
-            await config_menu(user_id, message)
-        else:
-            await sendMessage("🚫 <b>Not allowed to use</b>", message)
+        await sendMessage("🚫 <b>Not allowed to use</b>", message)
 
 
 async def botfiles_callback(client, callback_query):
     query = callback_query
-    data = query.data
-    cmd = data.split("^")
+    cmd = query.data.split("^")
     message = query.message
     user_id = query.from_user.id
 
     if int(cmd[-1]) != user_id:
         await query.answer("⛔ This menu is not for you!", show_alert=True)
         return
-    
+
+    action, section = _resolve_action(cmd[1])
+    if action in {"section", "view", "upload", "delete"} and len(cmd) > 2:
+        section = cmd[2]
+
+    if section in {"rclone_global", "config", "accounts"} and not _can_manage_global(
+        user_id
+    ):
+        await query.answer("⛔ This menu is not for you!", show_alert=True)
+        return
+
     try:
-        if cmd[1] == "get_rclone_conf":
-            path = await get_rclone_path(user_id, message)
-            await client.send_document(document=path, chat_id=message.chat.id)
+        if action == "section":
             await query.answer()
-        elif cmd[1] == "get_global_rclone_conf":
-            path = f"rclone/rclone_global/rclone.conf"
-            await client.send_document(
-                    document=path, chat_id=message.chat.id
-                )
+            await files_section_menu(user_id, message, cmd[2], True)
+        elif action == "back":
             await query.answer()
-        elif cmd[1] == "get_config_env":
-            await client.send_document(document="config.env", chat_id=message.chat.id)
+            await files_menu(user_id, message, True)
+        elif action == "close":
             await query.answer()
-        elif cmd[1] == "get_token_pickle":
-            path = f"tokens/{user_id}.pickle"
-            await client.send_document(document=path, chat_id=message.chat.id)
+            await message.delete()
+        elif action == "view":
+            await _view_section_file(client, message, user_id, section)
             await query.answer()
-        elif cmd[1] == "get_debrid_token":
-            path= "debrid/debrid_token.txt"
-            await client.send_document(document=path, chat_id=message.chat.id)
-            await query.answer()
-        if cmd[1] == "add_rclone_conf":
-            await set_config_listener(client, query, message)
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "add_global_rclone_conf" and user_id == OWNER_ID:
-            await set_config_listener(client, query, message, True)
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif (
-            cmd[1] == "add_token_pickle"
-            or cmd[1] == "add_accounts"
-            or cmd[1] == "add_config_env"
-            or cmd[1] == "add_debrid_token"
-            and user_id == OWNER_ID
-        ):
-            await set_config_listener(client, query, message)
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "delete_clone_conf":
-            path = await get_rclone_path(user_id, message)
-            osremove(path)
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "delete_global_rclone_conf":
-            osremove(f"rclone/rclone_global/rclone.conf")
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "delete_config_env":
-            osremove("config.env")
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "delete_token_pickle":
-            path = f"tokens/{user_id}.pickle"
-            osremove(path)
-            await query.answer()
-            await config_menu(user_id, message, True)
-        elif cmd[1] == "delete_accounts":
-            if ospath.exists("accounts"):
-                srun(["rm", "-rf", "accounts"])
-            config_dict["USE_SERVICE_ACCOUNTS"] = False
-            if DATABASE_URL:
-                await DbManager().update_config({"USE_SERVICE_ACCOUNTS": False})
-            await query.answer()
-            await config_menu(user_id, message, True)
+            await files_menu(user_id, message, True)
+        elif action == "upload":
+            await _start_upload_listener(client, query, message, user_id, section)
+            await files_menu(user_id, message, True)
+        elif action == "delete":
+            await _delete_section_file(user_id, section)
+            await query.answer("🗑 Deleted", show_alert=False)
+            await files_menu(user_id, message, True)
         else:
             await query.answer()
             await message.delete()
@@ -538,12 +592,35 @@ async def botfiles_callback(client, callback_query):
         await sendMessage(str(err), message)
 
 
-async def set_config_listener(client, query, message, rclone_global=False):
-    if message.reply_to_message:
+async def set_config_listener(
+    client,
+    query,
+    message,
+    rclone_global=False,
+    forced_section=None,
+    target_user_id=None,
+):
+    if target_user_id is not None:
+        user_id = target_user_id
+    elif message.reply_to_message and message.reply_to_message.from_user:
         user_id = message.reply_to_message.from_user.id
-    else:
+    elif message.from_user:
         user_id = message.from_user.id
-        
+    else:
+        user_id = query.from_user.id
+
+    question = None
+
+    def _ensure_target_file(saved_path, target_path):
+        if saved_path and ospath.exists(target_path):
+            return True
+        if saved_path and ospath.exists(saved_path):
+            if saved_path != target_path:
+                makedirs(ospath.dirname(target_path), exist_ok=True)
+                copyfile(saved_path, target_path)
+            return ospath.exists(target_path)
+        return False
+
     try:
         question = await client.send_message(
             message.chat.id, text="📁 <b>Send file</b>, /ignore to cancel"
@@ -551,79 +628,126 @@ async def set_config_listener(client, query, message, rclone_global=False):
         response = await client.listen.Message(
             filters.document | filters.text, id=filters.user(user_id), timeout=60
         )
-        if response.text and "/ignore" in response.text:
-            await client.listen.Cancel(filters.user(user_id))
-            await query.answer()
-        else:
-            file_name = response.document.file_name
+        if response.text:
+            if "/ignore" in response.text:
+                await client.listen.Cancel(filters.user(user_id))
+                return
+            await sendMessage("📁 <b>Please send a supported file.</b>", message)
+            return
+
+        if not response.document:
+            await sendMessage("📁 <b>Please send a supported file.</b>", message)
+            return
+
+        file_name = response.document.file_name
+        target_section = forced_section
+
+        if target_section is None:
             if file_name == "rclone.conf":
-                if rclone_global:
-                    type = "rclone_global"
-                    rclone_path = "rclone/rclone_global/rclone.conf"
-                else:
-                    type = "rclone"
-                    rclone_path = f"rclone/{user_id}/rclone.conf"
-                await client.download_media(response, file_name=rclone_path)
-                if DATABASE_URL:
-                    await DbManager().update_user_doc(user_id, type, rclone_path)
+                target_section = "rclone_global" if rclone_global else "rclone"
             elif file_name == "token.pickle":
-                path = f"{getcwd()}/tokens/"
-                makedirs(path, exist_ok=True)
-                des_dir = f"{path}{user_id}.pickle"
-                await client.download_media(response, file_name=des_dir)
-                if DATABASE_URL:
-                    await DbManager().update_user_doc(user_id, "token_pickle", des_dir)
-            elif file_name == "debrid_token.txt":
-                path = f"{getcwd()}/debrid/"
-                makedirs(path, exist_ok=True)
-                des_dir = f"{path}{file_name}"
-                await client.download_media(response, file_name=des_dir)
-                await load_debrid_token()
+                target_section = "token"
+            elif file_name == "config.env":
+                target_section = "config"
+            elif file_name == "accounts.zip":
+                target_section = "accounts"
+
+        if target_section == "rclone" or target_section == "rclone_global":
+            if target_section == "rclone_global":
+                file_type = "rclone_global"
+                rclone_path = "rclone/rclone_global/rclone.conf"
             else:
-                await client.download_media(response, file_name="./")
-                if file_name == "accounts.zip":
-                    if ospath.exists("accounts"):
-                        await (
-                            await create_subprocess_exec("rm", "-rf", "accounts")
-                        ).wait()
-                    await (
-                        await create_subprocess_exec(
-                            "7z",
-                            "x",
-                            "-o.",
-                            "-aoa",
-                            "accounts.zip",
-                            "accounts/*.json",
-                        )
-                    ).wait()
-                    await (
-                        await create_subprocess_exec(
-                            "chmod", "-R", "777", "accounts"
-                        )
-                    ).wait()
-                elif file_name in [".netrc", "netrc"]:
-                    await (await create_subprocess_exec("touch", ".netrc")).wait()
-                    # Only copy to /root/.netrc if running as root
-                    if environ.get("HOME") == "/root":
-                        await (
-                            await create_subprocess_exec("cp", ".netrc", "/root/.netrc")
-                        ).wait()
-                    await (
-                        await create_subprocess_exec("chmod", "600", ".netrc")
-                    ).wait()
-                elif file_name == "config.env":
-                    load_dotenv("config.env", override=True)
-                    await load_config()
-                if DATABASE_URL and file_name != "config.env":
-                    await DbManager().update_private_file(file_name)
-            if ospath.exists("accounts.zip"):
-                osremove("accounts.zip")
+                file_type = "rclone"
+                rclone_path = f"rclone/{user_id}/rclone.conf"
+            makedirs(ospath.dirname(rclone_path), exist_ok=True)
+            saved_path = await client.download_media(response, file_name=rclone_path)
+            if not _ensure_target_file(saved_path, rclone_path):
+                await sendMessage(
+                    "❌ <b>Failed to save rclone.conf.</b>\n"
+                    "Check disk space and write permissions.",
+                    message,
+                )
+                return
+            if DATABASE_URL:
+                await database.update_user_doc(user_id, file_type, rclone_path)
+            await sendMessage(
+                f"✅ <b>rclone.conf uploaded successfully.</b>\n"
+                f"<b>Saved to:</b> <code>{rclone_path}</code>",
+                message,
+            )
+        elif target_section == "token":
+            path = f"{getcwd()}/tokens/"
+            makedirs(path, exist_ok=True)
+            des_dir = f"{path}{user_id}.pickle"
+            saved_path = await client.download_media(response, file_name=des_dir)
+            if not _ensure_target_file(saved_path, des_dir):
+                await sendMessage(
+                    "❌ <b>Failed to save token.pickle.</b>\n"
+                    "Check disk space and write permissions.",
+                    message,
+                )
+                return
+            if DATABASE_URL:
+                await database.update_user_doc(user_id, "token_pickle", des_dir)
+            await sendMessage("✅ <b>token.pickle uploaded successfully.</b>", message)
+        elif target_section == "config":
+            saved_path = await client.download_media(response, file_name="config.env")
+            if not _ensure_target_file(saved_path, "config.env"):
+                await sendMessage(
+                    "❌ <b>Failed to save config.env.</b>\n"
+                    "Check disk space and write permissions.",
+                    message,
+                )
+                return
+            load_dotenv("config.env", override=True)
+            await load_config()
+            if DATABASE_URL:
+                await database.update_private_file("config.env")
+            await sendMessage("✅ <b>config.env uploaded successfully.</b>", message)
+        elif target_section == "accounts":
+            saved_path = await client.download_media(response, file_name="accounts.zip")
+            if not _ensure_target_file(saved_path, "accounts.zip"):
+                await sendMessage(
+                    "❌ <b>Failed to save accounts.zip.</b>\n"
+                    "Check disk space and write permissions.",
+                    message,
+                )
+                return
+            if ospath.exists("accounts"):
+                await (await create_subprocess_exec("rm", "-rf", "accounts")).wait()
+            await (
+                await create_subprocess_exec(
+                    "7z",
+                    "x",
+                    "-o.",
+                    "-aoa",
+                    "accounts.zip",
+                    "accounts/*.json",
+                )
+            ).wait()
+            await (await create_subprocess_exec("chmod", "-R", "777", "accounts")).wait()
+            if DATABASE_URL:
+                await database.update_private_file("accounts.zip")
+            await sendMessage("✅ <b>accounts.zip uploaded and extracted.</b>", message)
+        else:
+            await client.download_media(response, file_name="./")
+            if file_name in [".netrc", "netrc"]:
+                await (await create_subprocess_exec("touch", ".netrc")).wait()
+                if environ.get("HOME") == "/root":
+                    await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
+                await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
+            if DATABASE_URL:
+                await database.update_private_file(file_name)
+            await sendMessage("✅ <b>File uploaded successfully.</b>", message)
+        if ospath.exists("accounts.zip"):
+            osremove("accounts.zip")
     except TimeoutError:
         await client.send_message(message.chat.id, text="⏰ Too late 60s gone, try again!")
     except Exception as ex:
         await sendMessage(str(ex), message)
     finally:
-        await question.delete()
+        if question is not None:
+            await question.delete()
 
 
 bot.add_handler(

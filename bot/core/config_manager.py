@@ -1,5 +1,6 @@
 from ast import literal_eval
 from os import getenv
+from pathlib import Path
 
 from bot import LOGGER
 
@@ -41,9 +42,6 @@ class Config:
     RCLONE_DOWNLOAD_FLAGS = ""
     RCLONE_UPLOAD_FLAGS = ""
     REMOTE_SELECTION = False
-    RSS_CHAT_ID = 0
-    RSS_DELAY = 900
-    RSS_SIZE_LIMIT = 0
     SEARCH_API_LINK = ""
     SEARCH_LIMIT = 0
     SEARCH_PLUGINS = []
@@ -235,7 +233,15 @@ class Config:
     @classmethod
     def _load_from_module(cls):
         try:
-            from importlib import import_module
+            from importlib import import_module, util
+
+            spec = util.find_spec("config")
+            if spec is None or not spec.origin:
+                return False
+
+            if Path(spec.origin).resolve() != Path("config.py").resolve():
+                return False
+
             settings = import_module("config")
             for attr in dir(settings):
                 if attr.startswith("_") or callable(getattr(settings, attr)):

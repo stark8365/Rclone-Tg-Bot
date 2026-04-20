@@ -1,11 +1,15 @@
+from html import escape
 from asyncio import sleep
 from aiofiles.os import remove as aioremove, path as aiopath
 from os import walk, rename as osrename, path as ospath, remove as osremove
-from bot.helper.ext_utils.media_utils import create_thumb, take_ss
+from bot.helper.ext_utils.media_utils import (
+    create_thumb,
+    get_upload_media_details,
+    take_ss,
+)
 from pyrogram.types import InputMediaPhoto
 from time import time
 from re import match as re_match
-from PIL import Image
 from bot import (
     GLOBAL_EXTENSION_FILTER,
     IS_PREMIUM_USER,
@@ -21,8 +25,6 @@ from bot.helper.ext_utils.bot_utils import clean_unwanted, is_archive
 from bot.helper.ext_utils.human_format import get_readable_file_size
 from bot.helper.ext_utils.misc_utils import (
     get_base_name,
-    get_document_type,
-    get_media_info,
 )
 
 
@@ -44,15 +46,31 @@ class TelegramUploader:
         self._last_uploaded = 0
         self._iteration = 0
         self.__user_id = listener.message.from_user.id
-        self.client = app if app else bot
+        self.__user_session = False
+        if IS_PREMIUM_USER and app:
+            if listener.user_transmission:
+                self.__user_session = True
+            elif listener.bot_transmission:
+                self.__user_session = False
+            else:
+                self.__user_session = listener.isSuperGroup
+        self.client = app if self.__user_session else bot
         self.__upload_path = ""
         self.__sent_msg = None
+        self.__media_summary = ""
 
     async def upload(self):
         res = await self.__msg_to_reply()
         if not res:
             return
         self.__user_settings()
+        hybrid_leech = (
+            IS_PREMIUM_USER
+            and app
+            and self.__listener.user_transmission
+            and not self.__listener.bot_transmission
+            and self.__listener.isSuperGroup
+        )
         if await aiopath.isdir(self.__path):
             for dirpath, _, filenames in sorted(walk(self.__path)):
                 if dirpath.endswith("/yt-dlp-thumb"):
@@ -87,6 +105,21 @@ class TelegramUploader:
                         continue
                     if self.__is_cancelled:
                         return
+                    if hybrid_leech:
+                        if f_size > 2097152000:
+                            self.__user_session = True
+                            self.client = app
+                            self.__sent_msg = await app.get_messages(
+                                chat_id=self.__listener.message.chat.id,
+                                message_ids=self.__listener.uid,
+                            )
+                        else:
+                            self.__user_session = False
+                            self.client = bot
+                            self.__sent_msg = await bot.get_messages(
+                                chat_id=self.__listener.message.chat.id,
+                                message_ids=self.__listener.uid,
+                            )
                     self._last_uploaded = 0
                     await self.__prepare_file(file, dirpath)
                     await self.__upload_file(self.__upload_path, file)
@@ -135,9 +168,19 @@ class TelegramUploader:
     async def __upload_file(self, up_path, file):
         thumb = self.__thumb
         self.__is_corrupted = False
-        cap_mono = f"<code>{file}</code>"
+        self.__media_summary = ""
         try:
-            is_video, is_audio, is_image = await get_document_type(up_path)
+            media_kind, media_info, media_summary = await get_upload_media_details(
+                up_path
+            )
+            is_video = media_kind == "video"
+            is_audio = media_kind == "audio"
+            is_image = media_kind == "image"
+            duration = media_info.get("duration", 0) if media_info else 0
+            self.__media_summary = media_summary or ""
+            cap_mono = f"<code>{escape(file)}</code>"
+            if self.__media_summary:
+                cap_mono += f"\n{escape(self.__media_summary)}"
 
             if not is_image and thumb is None:
                 file_name = ospath.splitext(file)[0]
@@ -145,13 +188,13 @@ class TelegramUploader:
                 if await aiopath.isfile(thumb_path):
                     thumb = thumb_path
 
-            if self.__as_doc or (not is_video and not is_audio and not is_image):
+            if self.__as_doc or media_kind == "document":
                 if is_video:
                     # Send screenshots if enabled via command or user settings
                     if self.__listener.screenshots or self.__screenshots_count > 0:
-                        await self._send_screenshots()
+                        await self._send_screenshots(duration=duration)
                     if thumb is None:
-                        thumb = await create_thumb(up_path, None)
+                        thumb = await create_thumb(up_path, duration)
                 if self.__is_cancelled:
                     return
                 if config_dict["LEECH_LOG"]:
@@ -177,7 +220,6 @@ class TelegramUploader:
                     self.__sent_msg = await self.__sent_msg.reply_document(
                         document=up_path,
                         caption=cap_mono,
-                        quote=True,
                         thumb=thumb,
                         disable_notification=True,
                         progress=self.__upload_progress,
@@ -185,20 +227,16 @@ class TelegramUploader:
             elif is_video:
                 # Send screenshots if enabled via command or user settings
                 if self.__listener.screenshots or self.__screenshots_count > 0:
-                    await self._send_screenshots()
+                    await self._send_screenshots(duration=duration)
                 if not up_path.upper().endswith(("MKV", "MP4")):
                     new_path = up_path.split(".")[0] + ".mp4"
                     osrename(up_path, new_path)
                     up_path = new_path
-                duration = (await get_media_info(up_path))[0]
                 if thumb is None:
                     thumb = await create_thumb(up_path, duration)
-                if thumb is not None:
-                    with Image.open(thumb) as img:
-                        width, height = img.size
-                else:
-                    width = 480
-                    height = 320
+                video_info = (media_info or {}).get("video") or {}
+                width = video_info.get("width") or 480
+                height = video_info.get("height") or 320
                 if self.__is_cancelled:
                     return
                 if config_dict["LEECH_LOG"]:
@@ -230,7 +268,6 @@ class TelegramUploader:
                         width=width,
                         height=height,
                         caption=cap_mono,
-                        quote=True,
                         disable_notification=True,
                         thumb=thumb,
                         supports_streaming=True,
@@ -238,7 +275,8 @@ class TelegramUploader:
                         progress=self.__upload_progress,
                     )
             elif is_audio:
-                duration, artist, title = await get_media_info(up_path)
+                artist = (media_info or {}).get("artist")
+                title = (media_info or {}).get("title")
                 if self.__is_cancelled:
                     return
                 if config_dict["LEECH_LOG"]:
@@ -264,7 +302,6 @@ class TelegramUploader:
                 else:
                     self.__sent_msg = await self.__sent_msg.reply_audio(
                         audio=up_path,
-                        quote=True,
                         caption=cap_mono,
                         duration=duration,
                         performer=artist,
@@ -298,7 +335,6 @@ class TelegramUploader:
                     self.__sent_msg = await self.__sent_msg.reply_photo(
                         photo=up_path,
                         caption=cap_mono,
-                        quote=True,
                         disable_notification=True,
                         progress=self.__upload_progress,
                     )
@@ -331,10 +367,10 @@ class TelegramUploader:
         self.__processed_bytes += chunk_size
 
     async def __msg_to_reply(self):
-        if IS_PREMIUM_USER:
+        if self.__user_session:
             if not self.__listener.isSuperGroup:
                 await self.__listener.onUploadError(
-                    "Use supergroup to leech with user_session_string"
+                    "Use supergroup to leech with user_transmission!"
                 )
                 return False
             self.__sent_msg = await app.get_messages(
@@ -353,7 +389,12 @@ class TelegramUploader:
         if not ospath.exists(self.__thumb):
             self.__thumb = None
 
-    async def _send_screenshots(self, video_path=None, count=None, as_album=None):
+    def summary(self):
+        return self.__media_summary
+
+    async def _send_screenshots(
+        self, video_path=None, count=None, as_album=None, duration=None
+    ):
         """Send screenshots for a video file.
 
         Args:
@@ -378,7 +419,7 @@ class TelegramUploader:
             send_album = self.__screenshots_as_album
 
         path = video_path or self.__upload_path
-        outputs = await take_ss(path, ss_nb)
+        outputs = await take_ss(path, ss_nb, duration)
         if not outputs:
             return
 
@@ -395,7 +436,6 @@ class TelegramUploader:
                 self.__sent_msg = (
                     await self.__sent_msg.reply_media_group(
                         media=inputs,
-                        quote=True,
                         disable_notification=True,
                     )
                 )[-1]
@@ -405,7 +445,6 @@ class TelegramUploader:
                 if await aiopath.exists(m):
                     await self.__sent_msg.reply_photo(
                         photo=m,
-                        quote=True,
                         disable_notification=True,
                     )
 
